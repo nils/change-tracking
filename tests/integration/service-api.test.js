@@ -2,6 +2,9 @@ const cds = require("@sap/cds");
 const bookshop = require("path").resolve(__dirname, "./../bookshop");
 const { expect, data } = cds.test(bookshop);
 
+// Enable locale fallback to simulate end user requests
+cds.env.features.locale_fallback = true
+
 jest.setTimeout(5 * 60 * 1000);
 
 let adminService = null;
@@ -42,7 +45,122 @@ describe("change log integration test", () => {
 
         const afterChanges = await adminService.run(SELECT.from(ChangeView));
         expect(afterChanges.length).to.equal(6);
-    });    
+    });
+
+    it("1.8 When creating or deleting a record with a numeric type of 0 and a boolean type of false, a changelog should also be generated", async () => {
+        cds.env.requires["change-tracking"].preserveDeletes = true;
+        cds.services.AdminService.entities.Order.elements.netAmount["@changelog"] = true;
+        cds.services.AdminService.entities.Order.elements.isUsed["@changelog"] = true;
+
+        const ordersData = {
+            ID: "0faaff2d-7e0e-4494-97fe-c815ee973fa1",
+            isUsed: false,
+            netAmount: 0
+        };
+
+        await INSERT.into(adminService.entities.Order).entries(ordersData);
+        let changes = await adminService.run(SELECT.from(ChangeView));
+
+        expect(changes).to.have.length(2);
+        expect(
+            changes.map((change) => ({
+              entityKey: change.entityKey,
+              entity: change.entity,
+              valueChangedFrom: change.valueChangedFrom,
+              valueChangedTo: change.valueChangedTo,
+              modification: change.modification,
+              attribute: change.attribute
+            }))
+          ).to.have.deep.members([
+            {
+              entityKey: "0faaff2d-7e0e-4494-97fe-c815ee973fa1",
+              modification: "Create",
+              entity: "sap.capire.bookshop.Order",
+              attribute: "netAmount",
+              valueChangedFrom: "",
+              valueChangedTo: "0"
+            },
+            {
+              entityKey: "0faaff2d-7e0e-4494-97fe-c815ee973fa1",
+              modification: "Create",
+              entity: "sap.capire.bookshop.Order",
+              attribute: "isUsed",
+              valueChangedFrom: "",
+              valueChangedTo: "false"
+            },
+        ]);
+
+        await DELETE.from(adminService.entities.Order).where({ ID: "0faaff2d-7e0e-4494-97fe-c815ee973fa1" });
+        changes = await adminService.run(
+            SELECT.from(ChangeView).where({
+                modification: "delete",
+            })
+        );
+
+        expect(changes).to.have.length(2);
+        expect(
+            changes.map((change) => ({
+              entityKey: change.entityKey,
+              entity: change.entity,
+              valueChangedFrom: change.valueChangedFrom,
+              valueChangedTo: change.valueChangedTo,
+              modification: change.modification,
+              attribute: change.attribute
+            }))
+          ).to.have.deep.members([
+            {
+              entityKey: "0faaff2d-7e0e-4494-97fe-c815ee973fa1",
+              modification: "Delete",
+              entity: "sap.capire.bookshop.Order",
+              attribute: "netAmount",
+              valueChangedFrom: "0",
+              valueChangedTo: ""
+            },
+            {
+              entityKey: "0faaff2d-7e0e-4494-97fe-c815ee973fa1",
+              modification: "Delete",
+              entity: "sap.capire.bookshop.Order",
+              attribute: "isUsed",
+              valueChangedFrom: "false",
+              valueChangedTo: ""
+            },
+        ]);
+
+        delete cds.services.AdminService.entities.Order.elements.netAmount["@changelog"];
+        delete cds.services.AdminService.entities.Order.elements.isUsed["@changelog"];
+    });
+
+    it("1.9 For DateTime and Timestamp, support for input via Date objects.", async () => {
+        cds.env.requires["change-tracking"].preserveDeletes = true;
+        cds.services.AdminService.entities.RootEntity.elements.dateTime["@changelog"] = true;
+        cds.services.AdminService.entities.RootEntity.elements.timestamp["@changelog"] = true;
+        const rootEntityData = [
+            {
+                ID: "64625905-c234-4d0d-9bc1-283ee8940717",
+                dateTime: new Date("2024-10-16T08:53:48Z"),
+                timestamp: new Date("2024-10-23T08:53:54.000Z")
+            }
+        ]
+        await INSERT.into(adminService.entities.RootEntity).entries(rootEntityData);
+        let changes = await adminService.run(SELECT.from(ChangeView).where({
+            entity: "sap.capire.bookshop.RootEntity",
+            attribute: "dateTime",
+        }));
+        expect(changes.length).to.equal(1);
+        let change = changes[0];
+        expect(change.entityKey).to.equal("64625905-c234-4d0d-9bc1-283ee8940717");
+        expect(change.attribute).to.equal("dateTime");
+        expect(change.modification).to.equal("Create");
+        expect(change.valueChangedFrom).to.equal("");
+        /**
+         * REVISIT: Currently, when using '@cap-js/sqlite' or '@cap-js/hana' and inputting values of type Date in javascript,
+         * there is an issue with inconsistent formats before and after, which requires a fix from cds-dbs (Issue-873).
+         */
+        expect(change.valueChangedTo).to.equal(`${new Date("2024-10-16T08:53:48Z")}`);
+        delete cds.services.AdminService.entities.RootEntity.elements.dateTime["@changelog"];
+        delete cds.services.AdminService.entities.RootEntity.elements.timestamp["@changelog"];
+        cds.env.requires["change-tracking"].preserveDeletes = false;
+    });
 
     it("2.5 Root entity deep creation by service API  - should log changes on root entity (ERP4SMEPREPWORKAPPPLAT-32 ERP4SMEPREPWORKAPPPLAT-613)", async () => {
         const bookStoreData = {
@@ -60,10 +178,9 @@ describe("change log integration test", () => {
                 },
             ],
         };
-        await INSERT.into(adminService.entities.BookStores).entries(bookStoreData);
 
-        // REVISIT: CAP currently does not support run queries on the draft-enabled entity on application service (details in CAP/Issue#16292)
-        // await adminService.run(INSERT.into(adminService.entities.BookStores).entries(bookStoreData));
+        // CAP currently support run queries on the draft-enabled entity on application service, so we can re-enable it. (details in CAP/Issue#16292)
+        await adminService.run(INSERT.into(adminService.entities.BookStores).entries(bookStoreData));
 
         let changes = await SELECT.from(ChangeView).where({
             entity: "sap.capire.bookshop.BookStores",
@@ -103,7 +220,7 @@ describe("change log integration test", () => {
     it("3.6 Composition operation of inline entity operation by QL API", async () => {
         await UPDATE(adminService.entities["Order.Items"])
             .where({
-                up__ID: "3b23bb4b-4ac7-4a24-ac02-aa10cabd842c", 
+                up__ID: "3b23bb4b-4ac7-4a24-ac02-aa10cabd842c",
                 ID: "2b23bb4b-4ac7-4a24-ac02-aa10cabd842c"
             })
             .with({
@@ -111,7 +228,7 @@ describe("change log integration test", () => {
             });
 
         const changes = await adminService.run(SELECT.from(ChangeView));
-        
+
         expect(changes.length).to.equal(1);
         const change = changes[0];
         expect(change.attribute).to.equal("quantity");
@@ -140,7 +257,7 @@ describe("change log integration test", () => {
         expect(createBookStoresChange.objectID).to.equal("new name");
 
         await UPDATE(adminService.entities.BookStores)
-        .where({ 
+        .where({
             ID: "9d703c23-54a8-4eff-81c1-cdce6b6587c4"
         })
         .with({
@@ -158,7 +275,7 @@ describe("change log integration test", () => {
         expect(updateBookStoresChange.objectID).to.equal("BookStores name changed");
 
         cds.services.AdminService.entities.BookStores["@changelog"].pop();
-        
+
         const level3EntityData = [
             {
                 ID: "12ed5dd8-d45b-11ed-afa1-0242ac654321",
@@ -250,7 +367,7 @@ describe("change log integration test", () => {
         expect(createEntityChange.objectID).to.equal("In Preparation");
 
         // Test the object id when the parent node and child node are modified at the same time
-        await UPDATE(adminService.entities.RootEntity)
+        await UPDATE(adminService.entities.RootEntity, {ID: "01234567-89ab-cdef-0123-987654fedcba"})
         .with({
             ID: "01234567-89ab-cdef-0123-987654fedcba",
             name: "RootEntity name changed",
@@ -281,7 +398,7 @@ describe("change log integration test", () => {
         expect(updateEntityChange.objectID).to.equal("Open");
 
         // Tests the object id when the parent node update and child node deletion occur simultaneously
-        await UPDATE(adminService.entities.RootEntity)
+        await UPDATE(adminService.entities.RootEntity, {ID: "01234567-89ab-cdef-0123-987654fedcba"})
         .with({
             ID: "01234567-89ab-cdef-0123-987654fedcba",
             name: "RootEntity name del",
@@ -349,10 +466,9 @@ describe("change log integration test", () => {
                 validOn: "2022-01-01",
             },
         };
-        await INSERT.into(adminService.entities.BookStores).entries(bookStoreData);
 
-        // REVISIT: CAP currently does not support run queries on the draft-enabled entity on application service (details in CAP/Issue#16292)
-        // await adminService.run(INSERT.into(adminService.entities.BookStores).entries(bookStoreData));
+        // CAP currently support run queries on the draft-enabled entity on application service, so we can re-enable it. (details in CAP/Issue#16292)
+        await adminService.run(INSERT.into(adminService.entities.BookStores).entries(bookStoreData));
 
         let changes = await SELECT.from(ChangeView).where({
             entity: "sap.capire.bookshop.BookStoreRegistry",
@@ -417,6 +533,84 @@ describe("change log integration test", () => {
         expect(changes[0].valueChangedTo).to.equal("");
     });
 
+    it(`11.1 "disableUpdateTracking" setting`, async () => {
+        cds.env.requires["change-tracking"].disableUpdateTracking = true;
+        await UPDATE(adminService.entities.BookStores)
+            .where({ID: "64625905-c234-4d0d-9bc1-283ee8946770"})
+            .with({name: 'New name'});
+
+        let changes = await SELECT.from(ChangeView).where({
+            entity: "sap.capire.bookshop.BookStores",
+            attribute: "name",
+            modification: "update"
+        });
+        expect(changes.length).to.equal(0);
+
+        cds.env.requires["change-tracking"].disableUpdateTracking = false;
+        await UPDATE(adminService.entities.BookStores)
+            .where({ID: "64625905-c234-4d0d-9bc1-283ee8946770"})
+            .with({name: 'Another name'});
+
+        changes = await SELECT.from(ChangeView).where({
+            entity: "sap.capire.bookshop.BookStores",
+            attribute: "name",
+            modification: "update"
+        });
+        expect(changes.length).to.equal(1);
+    });
+
+    it(`11.2 "disableCreateTracking" setting`, async () => {
+        cds.env.requires["change-tracking"].disableCreateTracking = true;
+        await INSERT.into(adminService.entities.BookStores).entries({
+            ID: "9d703c23-54a8-4eff-81c1-cdce6b6587c4",
+            name: "new name",
+        });
+
+        let changes = await SELECT.from(ChangeView).where({
+            entity: "sap.capire.bookshop.BookStores",
+            attribute: "name",
+            modification: "create",
+        });
+        expect(changes.length).to.equal(0);
+
+        cds.env.requires["change-tracking"].disableCreateTracking = false;
+        await INSERT.into(adminService.entities.BookStores).entries({
+            ID: "04e93234-a5cb-4bfb-89b3-f242ddfaa4ad",
+            name: "another name",
+        });
+
+        changes = await SELECT.from(ChangeView).where({
+            entity: "sap.capire.bookshop.BookStores",
+            attribute: "name",
+            modification: "create",
+        });
+        expect(changes.length).to.equal(1);
+    });
+
+    it(`11.3 "disableDeleteTracking" setting`, async () => {
+        cds.env.requires["change-tracking"].disableDeleteTracking = true;
+        await DELETE.from(adminService.entities.Level3Entity)
+            .where({ID: "12ed5dd8-d45b-11ed-afa1-0242ac654321"});
+
+        let changes = await SELECT.from(ChangeView).where({
+            entity: "sap.capire.bookshop.Level3Entity",
+            attribute: "title",
+            modification: "delete",
+        });
+        expect(changes.length).to.equal(0);
+
+        cds.env.requires["change-tracking"].disableDeleteTracking = false;
+        await DELETE.from(adminService.entities.Level2Entity)
+            .where({ID: "dd1fdd7d-da2a-4600-940b-0baf2946c4ff"});
+
+        changes = await SELECT.from(ChangeView).where({
+            entity: "sap.capire.bookshop.Level2Entity",
+            attribute: "title",
+            modification: "delete",
+        });
+        expect(changes.length).to.equal(1);
+    });
+
     it("Do not change track personal data", async () => {
         const allCustomers = await SELECT.from(adminService.entities.Customers);
         await UPDATE(adminService.entities.Customers).where({ ID: allCustomers[0].ID }).with({
@@ -428,5 +622,175 @@ describe("change log integration test", () => {
         });
 
         expect(changes.length).to.equal(0);
+    });
+
+    it("When creating multiple root records, change tracking for each entity should also be generated", async () => {
+        cds.env.requires["change-tracking"].preserveDeletes = true;
+        cds.services.AdminService.entities.Order.elements.netAmount["@changelog"] = true;
+        cds.services.AdminService.entities.Order.elements.isUsed["@changelog"] = true;
+
+        const ordersData = [
+            {
+                ID: "fa4d0140-efdd-4c32-aafd-efb7f1d0c8e1",
+                isUsed: false,
+                netAmount: 0,
+                orderItems: [
+                    {
+                        ID: "f35b2d4c-9b21-4b9a-9b3c-ca1ad32a0d1a",
+                        quantity: 10,
+                    },
+                    {
+                        ID: "f35b2d4c-9b21-4b9a-9b3c-ca1ad32a1c2b",
+                        quantity: 12,
+                    }
+                ],
+            },
+            {
+                ID: "ec365b25-b346-4444-8f03-8f5b7d94f040",
+                isUsed: true,
+                netAmount: 10,
+                orderItems: [
+                    {
+                        ID: "f35b2d4c-9b21-4b9a-9b3c-ca1ad32a2c2a",
+                        quantity: 10,
+                    },
+                    {
+                        ID: "f35b2d4c-9b21-4b9a-9b3c-ca1ad32a2b3b",
+                        quantity: 12,
+                    }
+                ],
+            },
+            {
+                ID: "ab9e5510-a60b-4dfc-b026-161c5c2d4056",
+                isUsed: false,
+                netAmount: 20,
+                orderItems: [
+                    {
+                        ID: "f35b2d4c-9b21-4b9a-9b3c-ca1ad32a2c1a",
+                        quantity: 10,
+                    },
+                    {
+                        ID: "f35b2d4c-9b21-4b9a-9b3c-ca1ad32a4c1b",
+                        quantity: 12,
+                    }
+                ],
+            }
+        ];
+
+        await INSERT.into(adminService.entities.Order).entries(ordersData);
+        let changes = await adminService.run(SELECT.from(ChangeView));
+
+        expect(changes).to.have.length(12);
+        expect(
+            changes.map((change) => ({
+                entityKey: change.entityKey,
+                entity: change.entity,
+                valueChangedFrom: change.valueChangedFrom,
+                valueChangedTo: change.valueChangedTo,
+                modification: change.modification,
+                attribute: change.attribute
+            }))
+        ).to.have.deep.members([
+            {
+                entityKey: "fa4d0140-efdd-4c32-aafd-efb7f1d0c8e1",
+                modification: "Create",
+                entity: "sap.capire.bookshop.Order",
+                attribute: "netAmount",
+                valueChangedFrom: "",
+                valueChangedTo: "0"
+            },
+            {
+                entityKey: "fa4d0140-efdd-4c32-aafd-efb7f1d0c8e1",
+                modification: "Create",
+                entity: "sap.capire.bookshop.Order",
+                attribute: "isUsed",
+                valueChangedFrom: "",
+                valueChangedTo: "false"
+            },
+            {
+                entityKey: "fa4d0140-efdd-4c32-aafd-efb7f1d0c8e1",
+                modification: "Create",
+                entity: "sap.capire.bookshop.OrderItem",
+                attribute: "quantity",
+                valueChangedFrom: "",
+                valueChangedTo: "10"
+            },
+            {
+                entityKey: "fa4d0140-efdd-4c32-aafd-efb7f1d0c8e1",
+                modification: "Create",
+                entity: "sap.capire.bookshop.OrderItem",
+                attribute: "quantity",
+                valueChangedFrom: "",
+                valueChangedTo: "12"
+            },
+            {
+                entityKey: "ec365b25-b346-4444-8f03-8f5b7d94f040",
+                modification: "Create",
+                entity: "sap.capire.bookshop.Order",
+                attribute: "netAmount",
+                valueChangedFrom: "",
+                valueChangedTo: "10"
+            },
+            {
+                entityKey: "ec365b25-b346-4444-8f03-8f5b7d94f040",
+                modification: "Create",
+                entity: "sap.capire.bookshop.Order",
+                attribute: "isUsed",
+                valueChangedFrom: "",
+                valueChangedTo: "true"
+            },
+            {
+                entityKey: "ec365b25-b346-4444-8f03-8f5b7d94f040",
+                modification: "Create",
+                entity: "sap.capire.bookshop.OrderItem",
+                attribute: "quantity",
+                valueChangedFrom: "",
+                valueChangedTo: "10"
+            },
+            {
+                entityKey: "ec365b25-b346-4444-8f03-8f5b7d94f040",
+                modification: "Create",
+                entity: "sap.capire.bookshop.OrderItem",
+                attribute: "quantity",
+                valueChangedFrom: "",
+                valueChangedTo: "12"
+            },
+            {
+                entityKey: "ab9e5510-a60b-4dfc-b026-161c5c2d4056",
+                modification: "Create",
+                entity: "sap.capire.bookshop.Order",
+                attribute: "netAmount",
+                valueChangedFrom: "",
+                valueChangedTo: "20"
+            },
+            {
+                entityKey: "ab9e5510-a60b-4dfc-b026-161c5c2d4056",
+                modification: "Create",
+                entity: "sap.capire.bookshop.Order",
+                attribute: "isUsed",
+                valueChangedFrom: "",
+                valueChangedTo: "false"
+            },
+            {
+                entityKey: "ab9e5510-a60b-4dfc-b026-161c5c2d4056",
+                modification: "Create",
+                entity: "sap.capire.bookshop.OrderItem",
+                attribute: "quantity",
+                valueChangedFrom: "",
+                valueChangedTo: "10"
+            },
+            {
+                entityKey: "ab9e5510-a60b-4dfc-b026-161c5c2d4056",
+                modification: "Create",
+                entity: "sap.capire.bookshop.OrderItem",
+                attribute: "quantity",
+                valueChangedFrom: "",
+                valueChangedTo: "12"
+            }
+        ]);
+
+        cds.env.requires["change-tracking"].preserveDeletes = false;
+        delete cds.services.AdminService.entities.Order.elements.netAmount["@changelog"];
+        delete cds.services.AdminService.entities.Order.elements.isUsed["@changelog"];
     });
 });
