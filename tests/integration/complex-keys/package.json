@@ -1,4 +1,5 @@
 {
+  "name": "changetracking-integration-complex-keys",
   "dependencies": {
     "@cap-js/change-tracking": "*"
   },
