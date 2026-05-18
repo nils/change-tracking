@@ -17,6 +17,7 @@ const addSideEffects = (actions, flag, element) => {
   }
 
   for (const se of Object.values(actions)) {
+    if (se['@changelog.disable_sideeffects']) continue
     const target = flag ? 'TargetProperties' : 'TargetEntities'
     const sideEffectAttr = se[`@Common.SideEffects.${target}`]
     const property = flag ? 'changes' : { '=': `${element}.changes` }
